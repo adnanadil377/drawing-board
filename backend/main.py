@@ -13,7 +13,7 @@ import os
 app = FastAPI()
 
 # --- CORS ---
-origins = ["http://localhost:3000", "http://localhost:5173","http://192.168.1.16:5173"]
+origins = ["http://localhost:3000", "http://localhost:5173","http://192.168.1.16:5173","https://drawing-board-bice.vercel.app"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
