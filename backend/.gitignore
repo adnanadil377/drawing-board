@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.so
+
+# Virtual environment
+venv/
+env/
+ENV/
+.venv/
+.python-version
+
+# VS Code settings
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.*
+
+# Logs
+*.log
+
+# Test & coverage
+htmlcov/
+.coverage
+.tox/
+.pytest_cache/
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+
+# Misc
+*.sqlite3
+*.db
