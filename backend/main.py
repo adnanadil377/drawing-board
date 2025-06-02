@@ -298,6 +298,7 @@ def call_gemini_judge(submissions):
         "Descriptions:\n"
         "- {drawer_name}: {description}\n"
         "... (repeat for each)\n"
+        "but there can only be one winner...\n"
         "Winner: {drawer_name}\n"
         "Reason: {funny_reason}\n"
         "Here are the submissions:\n"
