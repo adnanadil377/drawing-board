@@ -36,7 +36,9 @@ cd drawing-board
 
 ```sh
 cd backend
-pip install fastapi uvicorn requests
+pip install fastapi uvicorn requests python-dotenv
+#or
+pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
