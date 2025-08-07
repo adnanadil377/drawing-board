@@ -1,8 +1,8 @@
 // src/components/DrawingControls.js
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 import DrawingBoard from './DrawingBoard';
 
-const DrawingControls = ({ currentRoom, currentPlayerId, onSubmitDrawing }) => {
+const DrawingControls = forwardRef(({ currentRoom, currentPlayerId, onSubmitDrawing }, ref) => {
   const drawingRef = useRef(null);
   const [timeLeft, setTimeLeft] = useState(currentRoom.round_duration_seconds);
   const [hasSubmitted, setHasSubmitted] = useState(false);
@@ -41,6 +41,28 @@ const DrawingControls = ({ currentRoom, currentPlayerId, onSubmitDrawing }) => {
       !!currentRoom.submitted_drawings.find(d => d.drawer_id === currentPlayerId)
     );
   }, [currentRoom, currentPlayerId]);
+
+  // New auto-submit logic when timer hits 0
+  useEffect(() => {
+    if (timeLeft === 0 && !hasSubmitted) {
+      // Check if not already submitted to prevent multiple submissions
+      if (drawingRef.current) {
+        const imgData = drawingRef.current.getImageData();
+        // Even if imgData is just a blank canvas, submit it
+        onSubmitDrawing(imgData || ""); // Pass empty string if getImageData fails
+      }
+    }
+  }, [timeLeft, hasSubmitted, onSubmitDrawing]);
+
+
+  useImperativeHandle(ref, () => ({
+    getDrawingData: () => {
+      if (drawingRef.current) {
+        return drawingRef.current.getImageData();
+      }
+      return null;
+    }
+  }));
 
   const handleSubmitDrawing = () => {
     if (drawingRef.current && !hasSubmitted) {
@@ -81,6 +103,6 @@ const DrawingControls = ({ currentRoom, currentPlayerId, onSubmitDrawing }) => {
       )}
     </div>
   );
-};
+});
 
 export default DrawingControls;

@@ -174,38 +174,6 @@ function App() {
     }
   }, [currentRoom, currentPlayerId]);
 
-  // Auto-submit drawing when timer in DrawingControls reaches 0
-  useEffect(() => {
-    let timerId;
-    if (currentRoom?.game_phase === 'drawing' &&
-        currentRoom.round_start_time) {
-
-      const startTime = new Date(currentRoom.round_start_time).getTime();
-      const duration = currentRoom.round_duration_seconds * 1000;
-      const endTime = startTime + duration;
-
-      const checkTime = () => {
-        if (Date.now() >= endTime) {
-          // Only auto-submit if not already submitted
-          if (
-            !currentRoom.submitted_drawings.find(
-              d => d.drawer_id === currentPlayerId
-            )
-          ) {
-            if (drawingControlsRef.current && drawingControlsRef.current.getDrawingData) {
-              const imageData = drawingControlsRef.current.getDrawingData();
-              handleSubmitDrawing(imageData || "");
-            }
-          }
-        } else {
-          timerId = setTimeout(checkTime, Math.max(250, endTime - Date.now()));
-        }
-      };
-      timerId = setTimeout(checkTime, Math.max(250, endTime - Date.now()));
-    }
-    return () => clearTimeout(timerId);
-  }, [currentRoom?.game_phase, currentRoom?.round_start_time, currentRoom?.round_duration_seconds, currentPlayerId, handleSubmitDrawing, currentRoom?.submitted_drawings]);
-
   const handlePlayAgain = async () => {
     if (!currentRoom || currentPlayerId !== currentRoom.host_id || currentRoom.game_phase !== 'game_over') return;
     setActionLoading(true); setError(null);
