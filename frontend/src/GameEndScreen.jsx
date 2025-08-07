@@ -125,13 +125,58 @@ const GameEndScreen = ({ room, isHost, onPlayAgain, onLeaveRoom, loading }) => {
 
   useEffect(() => {
     if (judgment.summary && judgment.winner_name && window.speechSynthesis) {
-      const verdictText = `The judge's verdict: ${judgment.summary}. The winner is ${judgment.winner_name}. Congratulations!`;
-      const utter = new window.SpeechSynthesisUtterance(verdictText);
-      utter.rate = 1;
-      utter.pitch = 1;
-      utter.lang = 'en-US';
-      window.speechSynthesis.cancel();
-      window.speechSynthesis.speak(utter);
+      const speakVerdict = () => {
+        const verdictText = `The judge's verdict: ${judgment.summary}. The winner is ${judgment.winner_name}. Congratulations!`;
+        const utter = new window.SpeechSynthesisUtterance(verdictText);
+
+        const voices = window.speechSynthesis.getVoices();
+        let selectedVoice = null;
+
+        // --- Voice Selection Logic ---
+        // 1. Prefer non-local, high-quality voices (e.g., Google, cloud-based)
+        selectedVoice = voices.find(v => v.lang.startsWith('en') && !v.localService && /Google/i.test(v.name));
+
+        // 2. Fallback to other well-known high-quality voices (often local)
+        if (!selectedVoice) {
+          selectedVoice = voices.find(v => v.lang.startsWith('en') && /Samantha|Daniel|Karen|Rishi/i.test(v.name));
+        }
+
+        // 3. Fallback to any non-local English voice
+        if (!selectedVoice) {
+          selectedVoice = voices.find(v => v.lang.startsWith('en') && !v.localService);
+        }
+
+        // 4. Fallback to any available English voice
+        if (!selectedVoice) {
+          selectedVoice = voices.find(v => v.lang.startsWith('en'));
+        }
+
+        if (selectedVoice) {
+          utter.voice = selectedVoice;
+          console.log("Selected TTS voice:", selectedVoice.name);
+        } else {
+          console.log("Using default TTS voice.");
+        }
+
+        utter.rate = 1;
+        utter.pitch = 1;
+
+        window.speechSynthesis.cancel(); // Cancel any previous speech
+        window.speechSynthesis.speak(utter);
+      };
+
+      // The 'voiceschanged' event is crucial because voices can load asynchronously.
+      if (window.speechSynthesis.getVoices().length > 0) {
+        speakVerdict();
+      } else {
+        window.speechSynthesis.onvoiceschanged = speakVerdict;
+      }
+
+      // Cleanup on component unmount
+      return () => {
+        window.speechSynthesis.onvoiceschanged = null;
+        window.speechSynthesis.cancel();
+      };
     }
   }, [judgment.summary, judgment.winner_name]);
 
