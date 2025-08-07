@@ -134,8 +134,7 @@ const DrawingBoard = forwardRef((props, ref) => {
           points: [pos.x, pos.y],
           color: tool === "eraser" ? CANVAS_BACKGROUND_COLOR : color,
           strokeWidth,
-          globalCompositeOperation:
-            tool === "eraser" ? "destination-out" : "source-over",
+          globalCompositeOperation: "source-over",
         },
       ]);
     } else if (tool === "fill") {
