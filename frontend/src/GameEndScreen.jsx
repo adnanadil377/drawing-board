@@ -1,5 +1,6 @@
 // frontend/src/components/GameEndScreen.js
 import React, { useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
 
 // Confetti effect (simple SVG overlay) - Kept as is
 const Confetti = () => {
@@ -157,7 +158,7 @@ const GameEndScreen = ({ room, isHost, onPlayAgain, onLeaveRoom, loading }) => {
           <p className="text-base sm:text-xl md:text-2xl font-semibold text-black mb-1 sm:mb-2">Judge's Verdict:</p>
           <div className="text-sm sm:text-lg md:text-xl italic text-black bg-[#F2CD37] border-2 border-black rounded-xl px-2 sm:px-4 py-2 sm:py-3 shadow-inner min-h-[3em] flex items-center justify-center">
             {judgment.summary ? (
-              <span>{judgment.summary}</span>
+              <ReactMarkdown>{judgment.summary}</ReactMarkdown>
             ) : (
               <span className="animate-pulse">Judge is thinking... <span role="img" aria-label="thinking face" className="inline-block ml-1">🤔</span></span>
             )}

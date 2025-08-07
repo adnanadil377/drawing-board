@@ -199,6 +199,7 @@ def _reset_game_state_fields(room: Room, new_phase: GamePhase = GamePhase.LOBBY)
     room.current_topic = None
     room.round_start_time = None
     room.submitted_drawings = []
+    room.judgment_result = None
 
 
 # --- Game Flow Endpoints ---
