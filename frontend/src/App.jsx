@@ -4,7 +4,7 @@ import axios from 'axios';
 import DrawingControls from './DrawingControls';
 import GameEndScreen from './GameEndScreen';
 
-const API_URL = 'https://boxapop492.pythonanywhere.com';
+const API_URL = 'https://sojoxe5015.pythonanywhere.com';
 const POLLING_INTERVAL = 2500;
 
 function App() {
