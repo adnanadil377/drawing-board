@@ -1,21 +1,46 @@
-from fastapi import FastAPI, HTTPException, status, Body, BackgroundTasks
+```python
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
-import secrets
-import uuid
 from datetime import datetime, timezone
 from enum import Enum
+
+import secrets
+import uuid
 import random
 import requests
 import os
+import time
+
 from dotenv import load_dotenv
+
+
+# ============================================================
+# Environment
+# ============================================================
+
 load_dotenv()
+
+
+# ============================================================
+# FastAPI
+# ============================================================
 
 app = FastAPI()
 
-# --- CORS ---
-origins = ["http://localhost:3000", "http://localhost:5173","http://192.168.1.16:5173","https://drawing-board-bice.vercel.app"]
+
+# ============================================================
+# CORS
+# ============================================================
+
+origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://192.168.1.16:5173",
+    "https://drawing-board-bice.vercel.app",
+]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -24,177 +49,382 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Constants & Game Config ---
+
+# ============================================================
+# Game Configuration
+# ============================================================
+
 MAX_PLAYERS_PER_ROOM = 6
-MIN_PLAYERS_TO_START = 2 # Minimum players for a game
+MIN_PLAYERS_TO_START = 2
 ROOM_CODE_LENGTH = 6
-ROUND_DURATION_SECONDS = 100 # All players draw together for 100 seconds
+ROUND_DURATION_SECONDS = 100
+
 PREDEFINED_TOPICS = [
-    "Apple", "Banana", "Car", "Dog", "Elephant", "Flower", "Guitar", "House",
-    "Ice Cream", "Jacket", "Kite", "Lion", "Moon", "Ninja", "Octopus", "Pizza",
-    "Queen", "Robot", "Sun", "Tree", "Umbrella", "Volcano", "Watch", "Xylophone",
-    "Yacht", "Zebra", "Book", "Chair", "Cloud", "Dragon", "Fish", "Ghost"
+    "Apple",
+    "Banana",
+    "Car",
+    "Dog",
+    "Elephant",
+    "Flower",
+    "Guitar",
+    "House",
+    "Ice Cream",
+    "Jacket",
+    "Kite",
+    "Lion",
+    "Moon",
+    "Ninja",
+    "Octopus",
+    "Pizza",
+    "Queen",
+    "Robot",
+    "Sun",
+    "Tree",
+    "Umbrella",
+    "Volcano",
+    "Watch",
+    "Xylophone",
+    "Yacht",
+    "Zebra",
+    "Book",
+    "Chair",
+    "Cloud",
+    "Dragon",
+    "Fish",
+    "Ghost",
 ]
 
-# --- Pydantic Models & Enums ---
+
+# ============================================================
+# Pydantic Models
+# ============================================================
+
 class Player(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
 
+
 class GamePhase(str, Enum):
     LOBBY = "lobby"
     DRAWING = "drawing"
-    ROUND_TRANSITION = "round_transition" # Brief phase between rounds
+    ROUND_TRANSITION = "round_transition"
     GAME_OVER = "game_over"
+
 
 class SubmittedDrawing(BaseModel):
     drawer_id: str
     drawer_name: str
     topic: str
-    image_b64: str # Base64 encoded image data
+    image_b64: str
+
 
 class RoomBase(BaseModel):
     name: Optional[str] = "Unnamed Room"
 
+
 class RoomCreate(RoomBase):
     host_name: str
+
 
 class RoomJoin(BaseModel):
     player_name: str
 
-class PlayerIdBody(BaseModel): # For requests just needing player_id
+
+class PlayerIdBody(BaseModel):
     player_id: str
 
+
 class SubmitDrawingRequest(BaseModel):
-    player_id: str # ID of the current drawer
+    player_id: str
     image_b64: str
+
 
 class Room(RoomBase):
     code: str
     host_id: str
-    players: List[Player] = []
+
+    players: List[Player] = Field(default_factory=list)
+
     max_players: int = MAX_PLAYERS_PER_ROOM
 
-    # Game State Fields
+    # Game state
     game_phase: GamePhase = GamePhase.LOBBY
     current_topic: Optional[str] = None
     round_start_time: Optional[datetime] = None
     round_duration_seconds: int = ROUND_DURATION_SECONDS
 
-    # Simultaneous drawing: no turn order, no current_drawer_id
-    submitted_drawings: List[SubmittedDrawing] = []
+    # Drawings submitted by players
+    submitted_drawings: List[SubmittedDrawing] = Field(
+        default_factory=list
+    )
 
-    # Add judgment result fields
-    judgment_result: Optional[dict] = None  # {"summary": str, "winner_id": str, "winner_name": str}
+    # Gemini judgment
+    judgment_result: Optional[dict] = None
 
 
-# --- In-memory "database" ---
+# ============================================================
+# In-memory database
+# ============================================================
+
 rooms_db: Dict[str, Room] = {}
 
+
+# ============================================================
+# Utility Functions
+# ============================================================
+
 def generate_room_code() -> str:
-    # ... (same as before)
+    """
+    Generate a unique 6-character room code.
+    """
+
     while True:
-        code = secrets.token_urlsafe(ROOM_CODE_LENGTH // 2 + 1)[:ROOM_CODE_LENGTH].upper().replace("_", "A").replace("-","B")
+
+        code = (
+            secrets.token_urlsafe(ROOM_CODE_LENGTH // 2 + 1)
+            [:ROOM_CODE_LENGTH]
+            .upper()
+            .replace("_", "A")
+            .replace("-", "B")
+        )
+
         if code not in rooms_db:
             return code
 
-def get_player_name_by_id(room: Room, player_id: str) -> Optional[str]:
+
+def get_player_name_by_id(
+    room: Room,
+    player_id: str
+) -> Optional[str]:
+
     for player in room.players:
+
         if player.id == player_id:
             return player.name
+
     return None
 
-# --- API Endpoints ---
-# /create, /join, /leave, /get_room_details remain largely the same for player management.
-# Ensure /leave handles removing player from player_draw_order if game is active.
+
+def get_player_by_id(
+    room: Room,
+    player_id: str
+) -> Optional[Player]:
+
+    for player in room.players:
+
+        if player.id == player_id:
+            return player
+
+    return None
+
+
+# ============================================================
+# Root Endpoint
+# ============================================================
+
 @app.get("/")
 def read_root():
-    return {"message": "Hello from FastAPI on PythonAnywhere!"}
+
+    return {
+        "message": "Hello from FastAPI on PythonAnywhere!"
+    }
 
 
-@app.post("/rooms/create", response_model=Room, status_code=status.HTTP_201_CREATED)
+# ============================================================
+# Room Management
+# ============================================================
+
+@app.post(
+    "/rooms/create",
+    response_model=Room,
+    status_code=status.HTTP_201_CREATED
+)
 async def create_new_room(room_data: RoomCreate):
+
     room_code = generate_room_code()
-    host_player = Player(name=room_data.host_name)
+
+    host_player = Player(
+        name=room_data.host_name
+    )
+
     new_room = Room(
-        name=room_data.name if room_data.name else f"Room {room_code}",
+        name=(
+            room_data.name
+            if room_data.name
+            else f"Room {room_code}"
+        ),
         code=room_code,
         host_id=host_player.id,
-        players=[host_player]
+        players=[host_player],
     )
+
     rooms_db[room_code] = new_room
+
+    print(
+        f"Room created: {room_code} "
+        f"by {host_player.name}"
+    )
+
     return new_room
 
-@app.post("/rooms/{room_code}/join", response_model=Room)
-async def join_existing_room(room_code: str, join_data: RoomJoin):
+
+@app.post(
+    "/rooms/{room_code}/join",
+    response_model=Room
+)
+async def join_existing_room(
+    room_code: str,
+    join_data: RoomJoin
+):
+
     room_code = room_code.upper()
+
     if room_code not in rooms_db:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Room not found"
+        )
+
     room = rooms_db[room_code]
 
-    if room.game_phase != GamePhase.LOBBY and room.game_phase != GamePhase.GAME_OVER : # Can only join before game starts or after it ends
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot join an active game.")
+    # Players can join only in lobby or after game over
+    if room.game_phase not in [
+        GamePhase.LOBBY,
+        GamePhase.GAME_OVER
+    ]:
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot join an active game."
+        )
+
     if len(room.players) >= room.max_players:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Room is full")
 
-    new_player = Player(name=join_data.player_name)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Room is full"
+        )
+
+    new_player = Player(
+        name=join_data.player_name
+    )
+
     room.players.append(new_player)
+
+    print(
+        f"{new_player.name} joined room {room.code}"
+    )
+
     return room
 
-@app.post("/rooms/{room_code}/leave", response_model=Room)
-async def leave_room(room_code: str, body: PlayerIdBody): # Expects {"player_id": "..."}
-    room_code_upper = room_code.upper()
-    player_id_to_leave = body.player_id
 
-    if room_code_upper not in rooms_db:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
-    room = rooms_db[room_code_upper]
+@app.post(
+    "/rooms/{room_code}/leave",
+    response_model=Room
+)
+async def leave_room(
+    room_code: str,
+    body: PlayerIdBody
+):
 
-    original_player_count = len(room.players)
-    player_left_instance = next((p for p in room.players if p.id == player_id_to_leave), None)
-    
-    if not player_left_instance: # Player not in room
-        return room # Or raise 404 for player
+    room_code = room_code.upper()
 
-    room.players = [p for p in room.players if p.id != player_id_to_leave]
+    player_id = body.player_id
 
-    if not room.players: # Last player left
-        del rooms_db[room_code_upper]
-        # Client should redirect to lobby or show message
-        raise HTTPException(status_code=status.HTTP_200_OK, detail="Room closed as last player left.")
+    if room_code not in rooms_db:
 
-    # If player was in draw order, remove them
-    if player_id_to_leave in room.submitted_drawings:
-        # Find index of leaving player in draw order
-        try:
-            leaving_player_draw_index = next(i for i, d in enumerate(room.submitted_drawings) if d.drawer_id == player_id_to_leave)
-            room.submitted_drawings.pop(leaving_player_draw_index)
-            
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Room not found"
+        )
 
-        except ValueError:
-            pass # Player wasn't in draw order
+    room = rooms_db[room_code]
 
-    # Handle host leaving
-    if room.host_id == player_id_to_leave and room.players:
-        room.host_id = room.players[0].id # New host is the next player
-        print(f"New host for room {room.code} is {room.players[0].name} ({room.host_id})")
+    player = get_player_by_id(
+        room,
+        player_id
+    )
 
-    # If game was active and player count drops below minimum, end it
-    if room.game_phase not in [GamePhase.LOBBY, GamePhase.GAME_OVER] and len(room.players) < MIN_PLAYERS_TO_START:
-        room.game_phase = GamePhase.GAME_OVER # Or LOBBY
-        # No new drawings added, just end
+    if not player:
+
+        return room
+
+    # Remove player
+    room.players = [
+        p
+        for p in room.players
+        if p.id != player_id
+    ]
+
+    print(
+        f"{player.name} left room {room.code}"
+    )
+
+    # Last player left
+    if not room.players:
+
+        del rooms_db[room_code]
+
+        raise HTTPException(
+            status_code=status.HTTP_200_OK,
+            detail="Room closed as last player left."
+        )
+
+    # Remove submitted drawing
+    room.submitted_drawings = [
+        drawing
+        for drawing in room.submitted_drawings
+        if drawing.drawer_id != player_id
+    ]
+
+    # Host leaves
+    if room.host_id == player_id:
+
+        room.host_id = room.players[0].id
+
+        print(
+            f"New host for room {room.code}: "
+            f"{room.players[0].name}"
+        )
+
+    # End active game if not enough players
+    if (
+        room.game_phase
+        not in [
+            GamePhase.LOBBY,
+            GamePhase.GAME_OVER
+        ]
+        and len(room.players) < MIN_PLAYERS_TO_START
+    ):
+
+        room.game_phase = GamePhase.GAME_OVER
         room.current_topic = None
-        print(f"Game in room {room.code} ended due to insufficient players.")
+
+        print(
+            f"Game in room {room.code} ended "
+            f"due to insufficient players."
+        )
 
     return room
 
 
-# --- Game Management Helper Functions ---
-def _select_new_topic(room: Room) -> str:
-    # Add logic to avoid recently used topics if desired
-    return random.choice(PREDEFINED_TOPICS)
+# ============================================================
+# Game Helpers
+# ============================================================
 
-def _reset_game_state_fields(room: Room, new_phase: GamePhase = GamePhase.LOBBY):
+def select_new_topic(room: Room) -> str:
+
+    return random.choice(
+        PREDEFINED_TOPICS
+    )
+
+
+def reset_game_state_fields(
+    room: Room,
+    new_phase: GamePhase = GamePhase.LOBBY
+):
+
     room.game_phase = new_phase
     room.current_topic = None
     room.round_start_time = None
@@ -202,263 +432,1159 @@ def _reset_game_state_fields(room: Room, new_phase: GamePhase = GamePhase.LOBBY)
     room.judgment_result = None
 
 
-# --- Game Flow Endpoints ---
+# ============================================================
+# Start Game
+# ============================================================
 
-@app.post("/rooms/{room_code}/start-game", response_model=Room)
-async def start_game(room_code: str, body: PlayerIdBody):
-    room_code_upper = room_code.upper()
+@app.post(
+    "/rooms/{room_code}/start-game",
+    response_model=Room
+)
+async def start_game(
+    room_code: str,
+    body: PlayerIdBody
+):
+
+    room_code = room_code.upper()
+
     player_id = body.player_id
 
-    if room_code_upper not in rooms_db:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
-    room = rooms_db[room_code_upper]
+    if room_code not in rooms_db:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Room not found"
+        )
+
+    room = rooms_db[room_code]
 
     if room.host_id != player_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the host can start the game.")
-    if room.game_phase != GamePhase.LOBBY:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Game can only be started from the lobby.")
-    if len(room.players) < MIN_PLAYERS_TO_START:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Need at least {MIN_PLAYERS_TO_START} players to start.")
 
-    # Simultaneous drawing setup
-    _reset_game_state_fields(room, GamePhase.DRAWING)
-    room.current_topic = _select_new_topic(room)
-    room.round_start_time = datetime.now(timezone.utc)
-    print(f"Game started in room {room.code}. Topic: {room.current_topic}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the host can start the game."
+        )
+
+    if room.game_phase != GamePhase.LOBBY:
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Game can only be started from the lobby."
+        )
+
+    if len(room.players) < MIN_PLAYERS_TO_START:
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Need at least "
+                f"{MIN_PLAYERS_TO_START} players to start."
+            )
+        )
+
+    # Reset game
+    reset_game_state_fields(
+        room,
+        GamePhase.DRAWING
+    )
+
+    # Select topic
+    room.current_topic = select_new_topic(room)
+
+    # Start timer
+    room.round_start_time = datetime.now(
+        timezone.utc
+    )
+
+    print(
+        f"Game started in room {room.code}. "
+        f"Topic: {room.current_topic}"
+    )
+
     return room
 
-@app.post("/rooms/{room_code}/submit-drawing", response_model=Room)
-async def submit_drawing_and_advance_turn(room_code: str, request_data: SubmitDrawingRequest):
-    room_code_upper = room_code.upper()
-    if room_code_upper not in rooms_db:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
-    room = rooms_db[room_code_upper]
+
+# ============================================================
+# Submit Drawing
+# ============================================================
+
+@app.post(
+    "/rooms/{room_code}/submit-drawing",
+    response_model=Room
+)
+async def submit_drawing(
+    room_code: str,
+    request_data: SubmitDrawingRequest
+):
+
+    room_code = room_code.upper()
+
+    if room_code not in rooms_db:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Room not found"
+        )
+
+    room = rooms_db[room_code]
 
     if room.game_phase != GamePhase.DRAWING:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Not in drawing phase.")
 
-    # Prevent duplicate submissions from same player
-    if any(d.drawer_id == request_data.player_id for d in room.submitted_drawings):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You have already submitted your drawing.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Not in drawing phase."
+        )
 
-    drawer_name = get_player_name_by_id(room, request_data.player_id) or "Unknown Drawer"
+    # Verify player exists
+    drawer_name = get_player_name_by_id(
+        room,
+        request_data.player_id
+    )
+
+    if drawer_name is None:
+
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Player is not part of this room."
+        )
+
+    # Prevent duplicate submissions
+    if any(
+        drawing.drawer_id == request_data.player_id
+        for drawing in room.submitted_drawings
+    ):
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You have already submitted your drawing."
+        )
+
+    # Validate image exists
+    if not request_data.image_b64:
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Drawing image is empty."
+        )
+
     drawing = SubmittedDrawing(
         drawer_id=request_data.player_id,
         drawer_name=drawer_name,
         topic=room.current_topic or "No Topic",
-        image_b64=request_data.image_b64
+        image_b64=request_data.image_b64,
     )
-    room.submitted_drawings.append(drawing)
-    print(f"Drawing submitted by {drawer_name} in room {room.code}")
 
-    # If all players submitted, end game early
+    room.submitted_drawings.append(
+        drawing
+    )
+
+    print(
+        f"Drawing submitted by "
+        f"{drawer_name} in room {room.code}"
+    )
+
+    # If everyone submitted, game ends
     if len(room.submitted_drawings) >= len(room.players):
+
         room.game_phase = GamePhase.GAME_OVER
 
+        print(
+            f"All players submitted in room "
+            f"{room.code}. Game over."
+        )
+
     return room
 
-@app.post("/rooms/{room_code}/play-again", response_model=Room)
-async def play_again(room_code: str, body: PlayerIdBody):
-    room_code_upper = room_code.upper()
+
+# ============================================================
+# Play Again
+# ============================================================
+
+@app.post(
+    "/rooms/{room_code}/play-again",
+    response_model=Room
+)
+async def play_again(
+    room_code: str,
+    body: PlayerIdBody
+):
+
+    room_code = room_code.upper()
+
     player_id = body.player_id
 
-    if room_code_upper not in rooms_db:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
-    room = rooms_db[room_code_upper]
+    if room_code not in rooms_db:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Room not found"
+        )
+
+    room = rooms_db[room_code]
 
     if room.host_id != player_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the host can restart the game.")
-    if room.game_phase != GamePhase.GAME_OVER:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Game can only be restarted when it's over.")
-    if len(room.players) < MIN_PLAYERS_TO_START:
-         _reset_game_state_fields(room, GamePhase.LOBBY)
-         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Need at least {MIN_PLAYERS_TO_START} players. Returning to Lobby.")
 
-    # Start new simultaneous drawing round
-    _reset_game_state_fields(room, GamePhase.DRAWING)
-    room.current_topic = _select_new_topic(room)
-    room.round_start_time = datetime.now(timezone.utc)
-    print(f"Game restarted in room {room.code}.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the host can restart the game."
+        )
+
+    if room.game_phase != GamePhase.GAME_OVER:
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Game can only be restarted "
+                "when it's over."
+            )
+        )
+
+    if len(room.players) < MIN_PLAYERS_TO_START:
+
+        reset_game_state_fields(
+            room,
+            GamePhase.LOBBY
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Need at least "
+                f"{MIN_PLAYERS_TO_START} players. "
+                f"Returning to Lobby."
+            )
+        )
+
+    # Start new round
+    reset_game_state_fields(
+        room,
+        GamePhase.DRAWING
+    )
+
+    room.current_topic = select_new_topic(
+        room
+    )
+
+    room.round_start_time = datetime.now(
+        timezone.utc
+    )
+
+    print(
+        f"Game restarted in room {room.code}. "
+        f"Topic: {room.current_topic}"
+    )
+
     return room
 
-# Gemini API helper
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # Set this in your environment
-GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent"
+
+# ============================================================
+# Gemini Configuration
+# ============================================================
+
+GEMINI_API_KEY = os.getenv(
+    "GEMINI_API_KEY"
+)
+
+GEMINI_MODEL = os.getenv(
+    "GEMINI_MODEL",
+    "gemini-flash-latest"
+)
+
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/"
+    f"v1beta/models/{GEMINI_MODEL}:generateContent"
+)
+
+
+# ============================================================
+# Gemini Judge
+# ============================================================
 
 def call_gemini_judge(submissions):
-    """
-    submissions: List[dict] with keys: drawer_name, topic, image_b64
-    Returns: dict with keys: summary (str), winner_name (str), winner_id (str)
-    """
-    # Prepare prompt
-    prompt = (
-        "You are a funny and witty art judge for a drawing game. "
-        "Below are the final submissions. For each, give a brief, humorous description of the drawing "
-        "and then pick a winner in a funny tone. "
-        "Format your answer as:\n"
-        "Descriptions:\n"
-        "- {drawer_name}: {description}\n"
-        "... (repeat for each)\n"
-        "but there can only be one winner...\n"
-        "Winner: {drawer_name}\n"
-        "Reason: {funny_reason}\n"
-        "Here are the submissions:\n"
-    )
-    for i, sub in enumerate(submissions):
-        prompt += f"{i+1}. {sub['drawer_name']} drew '{sub['topic']}'. (Image is base64 PNG, not shown here)\n"
 
-    # Gemini API call
-    headers = {"Content-Type": "application/json"}
+    """
+    Send all submitted drawings to Gemini and ask it
+    to judge them.
+
+    Each submission contains:
+
+        drawer_id
+        drawer_name
+        topic
+        image_b64
+
+    Returns:
+
+        {
+            "summary": str,
+            "winner_name": str
+        }
+    """
+
+    # --------------------------------------------------------
+    # Validate API key
+    # --------------------------------------------------------
+
+    if not GEMINI_API_KEY:
+
+        print(
+            "Gemini API error: "
+            "GEMINI_API_KEY is not configured."
+        )
+
+        return {
+            "summary": (
+                "Gemini API key is not configured."
+            ),
+            "winner_name": ""
+        }
+
+    # --------------------------------------------------------
+    # Validate submissions
+    # --------------------------------------------------------
+
+    if not submissions:
+
+        return {
+            "summary": "No drawings were submitted.",
+            "winner_name": ""
+        }
+
+    # --------------------------------------------------------
+    # Build prompt
+    # --------------------------------------------------------
+
+    prompt = """
+You are the judge of a funny multiplayer drawing game.
+
+Every player was given the SAME drawing topic and created
+their own drawing.
+
+Your job is to:
+
+1. Carefully inspect every submitted image.
+2. Briefly describe what each player drew.
+3. Compare every drawing with the given topic.
+4. Choose exactly ONE winner.
+5. Give a short and funny reason for the winner.
+
+IMPORTANT RULES:
+
+- Actually inspect the images.
+- Do NOT choose based only on the player's name.
+- Judge how well each drawing represents the topic.
+- There must be exactly ONE winner.
+- The winner must be one of the provided player names.
+- The winner name must match the provided player name exactly.
+
+Return your answer in EXACTLY this format:
+
+Descriptions:
+- PLAYER_NAME: short humorous description
+- PLAYER_NAME: short humorous description
+
+Winner: PLAYER_NAME
+Reason: short funny reason
+
+The drawings follow below.
+"""
+
+    # --------------------------------------------------------
+    # Gemini content parts
+    # --------------------------------------------------------
+
+    parts = [
+        {
+            "text": prompt
+        }
+    ]
+
+    for index, submission in enumerate(
+        submissions
+    ):
+
+        drawer_name = submission.get(
+            "drawer_name",
+            "Unknown Player"
+        )
+
+        topic = submission.get(
+            "topic",
+            "Unknown Topic"
+        )
+
+        image_b64 = submission.get(
+            "image_b64",
+            ""
+        )
+
+        if not image_b64:
+
+            print(
+                f"Warning: No image for "
+                f"{drawer_name}"
+            )
+
+            continue
+
+        # ----------------------------------------------------
+        # Handle data URI
+        #
+        # Example:
+        #
+        # data:image/png;base64,AAAA...
+        #
+        # Gemini expects only the base64 data.
+        # ----------------------------------------------------
+
+        mime_type = "image/png"
+
+        if image_b64.startswith(
+            "data:image/"
+        ):
+
+            try:
+
+                header, image_b64 = (
+                    image_b64.split(
+                        ",",
+                        1
+                    )
+                )
+
+                if "image/jpeg" in header:
+
+                    mime_type = "image/jpeg"
+
+                elif "image/jpg" in header:
+
+                    mime_type = "image/jpeg"
+
+                elif "image/webp" in header:
+
+                    mime_type = "image/webp"
+
+                elif "image/png" in header:
+
+                    mime_type = "image/png"
+
+            except ValueError:
+
+                print(
+                    f"Could not parse image "
+                    f"data URI for {drawer_name}"
+                )
+
+        # ----------------------------------------------------
+        # Player metadata
+        # ----------------------------------------------------
+
+        parts.append(
+            {
+                "text": (
+                    f"\nDrawing {index + 1}\n"
+                    f"Player: {drawer_name}\n"
+                    f"Topic: {topic}\n"
+                    f"Image:"
+                )
+            }
+        )
+
+        # ----------------------------------------------------
+        # Actual image
+        # ----------------------------------------------------
+
+        parts.append(
+            {
+                "inline_data": {
+                    "mime_type": mime_type,
+                    "data": image_b64
+                }
+            }
+        )
+
+    # --------------------------------------------------------
+    # Request body
+    # --------------------------------------------------------
+
     data = {
         "contents": [
             {
-                "parts": [
-                    {"text": prompt}
-                ]
+                "role": "user",
+                "parts": parts
             }
-        ]
+        ],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 1000
+        }
     }
-    params = {"key": GEMINI_API_KEY}
-    gemini_text = "" # Initialize to ensure it's always defined
 
-    try:
-        resp = requests.post(GEMINI_API_URL, headers=headers, params=params, json=data, timeout=30)
-        resp.raise_for_status() # Check for HTTP errors (4xx or 5xx)
-        
-        parsed_response = resp.json()
+    headers = {
+        "Content-Type": "application/json"
+    }
 
-        if isinstance(parsed_response, list):
-            # If response is a list (e.g., from a stream being fully read into a JSON array)
-            all_text_parts_collected = []
-            for chunk in parsed_response:
-                # Ensure chunk is a dictionary and navigate safely
-                if isinstance(chunk, dict) and "candidates" in chunk:
-                    for candidate in chunk.get("candidates", []):
-                        if isinstance(candidate, dict) and "content" in candidate:
-                            content = candidate.get("content", {})
-                            if isinstance(content, dict) and "parts" in content:
-                                for part_item in content.get("parts", []):
-                                    if isinstance(part_item, dict) and "text" in part_item:
-                                        all_text_parts_collected.append(part_item["text"])
-            gemini_text = "".join(all_text_parts_collected)
-        elif isinstance(parsed_response, dict):
-            # If response is a dictionary (e.g., non-streaming response or already aggregated stream)
-            candidates = parsed_response.get("candidates")
-            if candidates and isinstance(candidates, list) and len(candidates) > 0:
-                candidate = candidates[0] # Assuming the first candidate is primary
-                if isinstance(candidate, dict):
-                    content = candidate.get("content")
-                    if isinstance(content, dict):
-                        parts = content.get("parts")
-                        if isinstance(parts, list) and len(parts) > 0:
-                            part = parts[0] # Assuming the first part of the content
-                            if isinstance(part, dict) and "text" in part:
-                                gemini_text = part["text"]
-            if not gemini_text: # If any check failed and gemini_text wasn't set
-                 print("Gemini API warning: Response dictionary has unexpected structure or missing text.")
-        else:
-            # Should not happen if resp.json() works as expected (returns list or dict)
-            print(f"Gemini API error: Unexpected response type from resp.json(): {type(parsed_response)}")
+    params = {
+        "key": GEMINI_API_KEY
+    }
 
-        if not gemini_text: # Log if no text could be extracted.
-             print("Gemini API warning: No text content extracted from response. Proceeding with empty text.")
-             # The original parsing logic will produce empty summary/winner if gemini_text is empty
+    # --------------------------------------------------------
+    # Retry configuration
+    # --------------------------------------------------------
 
-        # --- Original parsing logic from user's code ---
-        # This logic will run on the correctly populated `gemini_text`
-        summary = ""
-        winner_name = ""
-        for line in gemini_text.splitlines():
-            if line.strip().startswith("Descriptions:"):
-                summary = "" # This reset behavior is kept as per original
-            elif line.strip().startswith("- "):
-                summary += line + "\n"
-            elif line.strip().startswith("Winner:"):
-                winner_name = line.split(":", 1)[-1].strip()
-            elif line.strip().startswith("Reason:"):
-                summary += line + "\n" # Appends the "Reason: ..." line itself
-        # --- End of original parsing logic ---
-        
-        print(summary.strip()),
-        print(winner_name),
-        return {
-            "summary": summary.strip(),
-            "winner_name": winner_name,
-        }
-    except requests.exceptions.RequestException as e: # Covers connection errors, timeouts, HTTP errors etc.
-        print(f"Gemini API request failed: {e}")
-        return {"summary": "Could not connect to Gemini AI.", "winner_name": ""}
-    except (KeyError, IndexError, TypeError, ValueError) as e: 
-        # Catches errors from malformed JSON structure if assumptions fail, or json() parsing issues.
-        response_text_snippet = "N/A"
-        if 'resp' in locals() and hasattr(resp, 'text') and resp.text:
-            response_text_snippet = resp.text[:200] + "..."
-        print(f"Error processing Gemini API response structure: {e}. Response snippet: {response_text_snippet}")
-        return {"summary": "Error understanding Gemini AI's response structure.", "winner_name": ""}
-    except Exception as e: # General catch-all for any other unexpected errors
-        print(f"Gemini API error (general exception): {e}")
-        response_text_snippet = "N/A"
-        if 'resp' in locals() and hasattr(resp, 'text') and resp.text: # Check if resp and resp.text exist
-            response_text_snippet = resp.text[:200] + "..."
-        print(f"Gemini Response Snippet (if available): {response_text_snippet}")
-        return { # Original fallback
-            "summary": "Could not get a judgment from Gemini AI.",
-            "winner_name": "",
-        }
-def run_gemini_judgment(room: Room):
-    if not room.submitted_drawings or len(room.submitted_drawings) == 0:
+    MAX_RETRIES = 4
+
+    RETRYABLE_STATUS_CODES = {
+        429,
+        500,
+        502,
+        503,
+        504
+    }
+
+    # --------------------------------------------------------
+    # Send request
+    # --------------------------------------------------------
+
+    for attempt in range(
+        MAX_RETRIES
+    ):
+
+        try:
+
+            print(
+                f"Sending {len(submissions)} "
+                f"drawings to Gemini "
+                f"(attempt {attempt + 1}/"
+                f"{MAX_RETRIES})..."
+            )
+
+            response = requests.post(
+                GEMINI_API_URL,
+                headers=headers,
+                params=params,
+                json=data,
+                timeout=60
+            )
+
+            # ------------------------------------------------
+            # Retry temporary errors
+            # ------------------------------------------------
+
+            if response.status_code in (
+                RETRYABLE_STATUS_CODES
+            ):
+
+                print(
+                    f"Gemini returned HTTP "
+                    f"{response.status_code}"
+                )
+
+                if attempt < MAX_RETRIES - 1:
+
+                    delay = (
+                        2 ** attempt
+                        + random.uniform(
+                            0,
+                            1
+                        )
+                    )
+
+                    print(
+                        f"Retrying Gemini in "
+                        f"{delay:.2f} seconds..."
+                    )
+
+                    time.sleep(delay)
+
+                    continue
+
+                print(
+                    "Gemini failed after "
+                    f"{MAX_RETRIES} attempts."
+                )
+
+                print(
+                    f"Response: "
+                    f"{response.text[:1000]}"
+                )
+
+                return {
+                    "summary": (
+                        "Gemini is temporarily "
+                        "unavailable. Please try again."
+                    ),
+                    "winner_name": ""
+                }
+
+            # ------------------------------------------------
+            # Other HTTP errors
+            # ------------------------------------------------
+
+            if not response.ok:
+
+                print(
+                    f"Gemini API error: "
+                    f"HTTP {response.status_code}"
+                )
+
+                print(
+                    f"Response: "
+                    f"{response.text[:1000]}"
+                )
+
+                return {
+                    "summary": (
+                        "Gemini API request failed."
+                    ),
+                    "winner_name": ""
+                }
+
+            # ------------------------------------------------
+            # Parse JSON
+            # ------------------------------------------------
+
+            response_json = response.json()
+
+            candidates = response_json.get(
+                "candidates",
+                []
+            )
+
+            if not candidates:
+
+                print(
+                    "Gemini returned no candidates."
+                )
+
+                print(
+                    f"Response: {response_json}"
+                )
+
+                return {
+                    "summary": (
+                        "Gemini returned "
+                        "no judgment."
+                    ),
+                    "winner_name": ""
+                }
+
+            candidate = candidates[0]
+
+            content = candidate.get(
+                "content",
+                {}
+            )
+
+            response_parts = content.get(
+                "parts",
+                []
+            )
+
+            gemini_text = ""
+
+            for part in response_parts:
+
+                if (
+                    isinstance(part, dict)
+                    and "text" in part
+                ):
+
+                    gemini_text += part["text"]
+
+            gemini_text = gemini_text.strip()
+
+            if not gemini_text:
+
+                print(
+                    "Gemini returned empty text."
+                )
+
+                print(
+                    f"Response: {response_json}"
+                )
+
+                return {
+                    "summary": (
+                        "Gemini returned "
+                        "an empty judgment."
+                    ),
+                    "winner_name": ""
+                }
+
+            # ------------------------------------------------
+            # Print Gemini response
+            # ------------------------------------------------
+
+            print(
+                "================ GEMINI ================"
+            )
+
+            print(gemini_text)
+
+            print(
+                "=========================================="
+            )
+
+            # ------------------------------------------------
+            # Extract winner
+            # ------------------------------------------------
+
+            winner_name = ""
+
+            for line in (
+                gemini_text.splitlines()
+            ):
+
+                line = line.strip()
+
+                if line.lower().startswith(
+                    "winner:"
+                ):
+
+                    winner_name = (
+                        line.split(
+                            ":",
+                            1
+                        )[1]
+                        .strip()
+                    )
+
+                    break
+
+            # ------------------------------------------------
+            # Get valid player names
+            # ------------------------------------------------
+
+            valid_player_names = [
+                submission.get(
+                    "drawer_name",
+                    ""
+                ).strip()
+                for submission in submissions
+            ]
+
+            # ------------------------------------------------
+            # Exact case-insensitive match
+            # ------------------------------------------------
+
+            exact_match = next(
+                (
+                    name
+                    for name in valid_player_names
+                    if name.lower()
+                    == winner_name.lower()
+                ),
+                None
+            )
+
+            if exact_match:
+
+                winner_name = exact_match
+
+            else:
+
+                # --------------------------------------------
+                # Fuzzy-ish containment fallback
+                # --------------------------------------------
+
+                matched_name = next(
+                    (
+                        name
+                        for name in valid_player_names
+                        if name.lower()
+                        in winner_name.lower()
+                    ),
+                    None
+                )
+
+                if matched_name:
+
+                    winner_name = matched_name
+
+                else:
+
+                    print(
+                        "WARNING: Gemini returned "
+                        f"invalid winner: "
+                        f"{winner_name}"
+                    )
+
+                    winner_name = ""
+
+            # ------------------------------------------------
+            # Extract descriptions + reason
+            # ------------------------------------------------
+
+            summary_lines = []
+
+            for line in (
+                gemini_text.splitlines()
+            ):
+
+                stripped = line.strip()
+
+                if stripped.startswith("- "):
+
+                    summary_lines.append(
+                        stripped
+                    )
+
+                elif stripped.lower().startswith(
+                    "reason:"
+                ):
+
+                    summary_lines.append(
+                        stripped
+                    )
+
+            summary = "\n".join(
+                summary_lines
+            )
+
+            # Fallback to complete response
+            if not summary:
+
+                summary = gemini_text
+
+            return {
+                "summary": summary,
+                "winner_name": winner_name
+            }
+
+        # ----------------------------------------------------
+        # Network error
+        # ----------------------------------------------------
+
+        except requests.exceptions.RequestException as e:
+
+            print(
+                f"Gemini network error "
+                f"(attempt {attempt + 1}/"
+                f"{MAX_RETRIES}): {e}"
+            )
+
+            if attempt < MAX_RETRIES - 1:
+
+                delay = (
+                    2 ** attempt
+                    + random.uniform(
+                        0,
+                        1
+                    )
+                )
+
+                print(
+                    f"Retrying in "
+                    f"{delay:.2f} seconds..."
+                )
+
+                time.sleep(delay)
+
+            else:
+
+                print(
+                    "Gemini request failed "
+                    "after all retries."
+                )
+
+                return {
+                    "summary": (
+                        "Could not connect "
+                        "to Gemini AI."
+                    ),
+                    "winner_name": ""
+                }
+
+        # ----------------------------------------------------
+        # JSON / response parsing error
+        # ----------------------------------------------------
+
+        except (
+            ValueError,
+            KeyError,
+            TypeError
+        ) as e:
+
+            print(
+                f"Error processing Gemini "
+                f"response: {e}"
+            )
+
+            try:
+
+                print(
+                    f"Raw response: "
+                    f"{response.text[:1000]}"
+                )
+
+            except Exception:
+
+                pass
+
+            return {
+                "summary": (
+                    "Error understanding "
+                    "Gemini's response."
+                ),
+                "winner_name": ""
+            }
+
+        # ----------------------------------------------------
+        # Unexpected error
+        # ----------------------------------------------------
+
+        except Exception as e:
+
+            print(
+                f"Unexpected Gemini error: {e}"
+            )
+
+            return {
+                "summary": (
+                    "Could not get a "
+                    "judgment from Gemini AI."
+                ),
+                "winner_name": ""
+            }
+
+    # --------------------------------------------------------
+    # Should never reach here
+    # --------------------------------------------------------
+
+    return {
+        "summary": "Gemini judgment failed.",
+        "winner_name": ""
+    }
+
+
+# ============================================================
+# Run Gemini Judgment
+# ============================================================
+
+def run_gemini_judgment(
+    room: Room
+):
+
+    # --------------------------------------------------------
+    # No submissions
+    # --------------------------------------------------------
+
+    if (
+        not room.submitted_drawings
+        or len(room.submitted_drawings) == 0
+    ):
+
         room.judgment_result = {
             "summary": "No drawings to judge.",
             "winner_id": "",
-            "winner_name": "",
+            "winner_name": ""
         }
+
         return
+
+    # --------------------------------------------------------
+    # Prepare submissions
+    # --------------------------------------------------------
+
     submissions = [
         {
-            "drawer_name": d.drawer_name,
-            "topic": d.topic,
-            "image_b64": d.image_b64,
-            "drawer_id": d.drawer_id,
+            "drawer_id": drawing.drawer_id,
+            "drawer_name": drawing.drawer_name,
+            "topic": drawing.topic,
+            "image_b64": drawing.image_b64,
         }
-        for d in room.submitted_drawings
+        for drawing in room.submitted_drawings
     ]
-    result = call_gemini_judge(submissions)
+
+    # --------------------------------------------------------
+    # Call Gemini
+    # --------------------------------------------------------
+
+    result = call_gemini_judge(
+        submissions
+    )
+
+    # --------------------------------------------------------
+    # Find winner ID
+    # --------------------------------------------------------
+
     winner_id = ""
-    for d in room.submitted_drawings:
-        if d.drawer_name == result.get("winner_name"):
-            winner_id = d.drawer_id
-            break
+
+    winner_name = result.get(
+        "winner_name",
+        ""
+    )
+
+    if winner_name:
+
+        for drawing in room.submitted_drawings:
+
+            if (
+                drawing.drawer_name
+                == winner_name
+            ):
+
+                winner_id = (
+                    drawing.drawer_id
+                )
+
+                break
+
+    # --------------------------------------------------------
+    # Save result
+    # --------------------------------------------------------
+
     room.judgment_result = {
-        "summary": result.get("summary", ""),
+        "summary": result.get(
+            "summary",
+            ""
+        ),
         "winner_id": winner_id,
-        "winner_name": result.get("winner_name", ""),
+        "winner_name": winner_name
     }
 
-@app.post("/rooms/{room_code}/judge", response_model=Room)
-async def judge_room(room_code: str, background_tasks: BackgroundTasks):
-    room_code_upper = room_code.upper()
-    if room_code_upper not in rooms_db:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
-    room = rooms_db[room_code_upper]
+    print(
+        f"Judgment complete for room "
+        f"{room.code}. "
+        f"Winner: {winner_name}"
+    )
+
+
+# ============================================================
+# Judge Room
+# ============================================================
+
+@app.post(
+    "/rooms/{room_code}/judge",
+    response_model=Room
+)
+async def judge_room(
+    room_code: str,
+    background_tasks: BackgroundTasks
+):
+
+    room_code = room_code.upper()
+
+    if room_code not in rooms_db:
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Room not found"
+        )
+
+    room = rooms_db[room_code]
+
     if room.game_phase != GamePhase.GAME_OVER:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Judgment only after game over.")
-    # Run Gemini judgment in background (blocking is fine for demo, but use background for real apps)
-    background_tasks.add_task(run_gemini_judgment, room)
+
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Judgment only after game over."
+            )
+        )
+
+    # Don't trigger duplicate judgments
+    if room.judgment_result is not None:
+
+        return room
+
+    print(
+        f"Starting Gemini judgment "
+        f"for room {room.code}"
+    )
+
+    background_tasks.add_task(
+        run_gemini_judgment,
+        room
+    )
+
     return room
 
-@app.get("/rooms/{room_code}", response_model=Room)
-async def get_room_details(room_code: str):
+
+# ============================================================
+# Get Room Details
+# ============================================================
+
+@app.get(
+    "/rooms/{room_code}",
+    response_model=Room
+)
+async def get_room_details(
+    room_code: str
+):
+
     room_code = room_code.upper()
+
     if room_code not in rooms_db:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Room not found"
+        )
+
     room = rooms_db[room_code]
-    # If in drawing phase and time is up, move to game over
-    if room.game_phase == GamePhase.DRAWING and room.round_start_time:
-        now = datetime.now(timezone.utc)
-        elapsed = (now - room.round_start_time).total_seconds()
-        if elapsed >= room.round_duration_seconds:
-            room.game_phase = GamePhase.GAME_OVER
-    # If in game over and judgment not done, trigger judgment (sync for now)
-    if room.game_phase == GamePhase.GAME_OVER and not room.judgment_result:
-        run_gemini_judgment(room)
+
+    # --------------------------------------------------------
+    # Check drawing timer
+    # --------------------------------------------------------
+
+    if (
+        room.game_phase
+        == GamePhase.DRAWING
+        and room.round_start_time
+    ):
+
+        now = datetime.now(
+            timezone.utc
+        )
+
+        elapsed = (
+            now
+            - room.round_start_time
+        ).total_seconds()
+
+        if (
+            elapsed
+            >= room.round_duration_seconds
+        ):
+
+            room.game_phase = (
+                GamePhase.GAME_OVER
+            )
+
+            print(
+                f"Time expired for room "
+                f"{room.code}"
+            )
+
+    # --------------------------------------------------------
+    # Automatic judgment
+    # --------------------------------------------------------
+    #
+    # IMPORTANT:
+    # This is synchronous here, meaning the GET request
+    # waits for Gemini to finish.
+    #
+    # We keep this behavior to preserve your current frontend.
+    #
+    # --------------------------------------------------------
+
+    if (
+        room.game_phase
+        == GamePhase.GAME_OVER
+        and room.judgment_result is None
+        and len(room.submitted_drawings) > 0
+    ):
+
+        print(
+            f"Triggering Gemini judgment "
+            f"from room GET for {room.code}"
+        )
+
+        run_gemini_judgment(
+            room
+        )
+
     return room
+```
